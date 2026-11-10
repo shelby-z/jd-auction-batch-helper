@@ -25,18 +25,20 @@ def title_codes(title,known):
 def parse_tables(tables,merges,file_name,normalize,column_hints=None):
     plans=[];inventory=[];covered=set()
     for rows,sheet in tables:
-        for h,values in enumerate(rows):
+        hint=(column_hints or {}).get(sheet)
+        candidates=[(-1,['']*max(map(len,rows),default=0))] if hint and hint['headerRow']==0 else enumerate(rows)
+        for h,values in candidates:
             labels=[header(v) for v in values]
-            hint=(column_hints or {}).get(sheet)
             if hint and h!=hint['headerRow']-1:continue
             idcol=hint['id'] if hint else next((i for i,v in enumerate(labels) if v in ID_HEADERS),None)
             if idcol is None:continue
             get=lambda row,col:row[col] if col is not None and col<len(row) else ''
             titlecol=hint['name'] if hint else next((i for i,v in enumerate(labels) if v in TITLE_HEADERS),None)
             pricecol=hint['price'] if hint else next((i for i,v in enumerate(labels) if v in PRICE_HEADERS),None)
-            statuscol=next((i for i,v in enumerate(labels) if v in {'鉴定结论','是否上拍'}),None)
+            statuscol=hint.get('status') if hint and 'status' in hint else next((i for i,v in enumerate(labels) if v in {'鉴定结论','是否上拍'}),None)
             sessioncol=hint.get('session') if hint and 'session' in hint else next((i for i,v in enumerate(labels) if v in {'专场名称','所属专场','拍卖专场','场次名称'}),None)
-            code_rows={r+1:code(get(row,idcol)) for r,row in enumerate(rows) if r>h and code(get(row,idcol))}
+            start=hint.get('dataStartRow',h+2) if hint else h+2
+            code_rows={r+1:code(get(row,idcol)) for r,row in enumerate(rows) if r+1>=start and code(get(row,idcol))}
             rejected={r for r in code_rows if str(get(rows[r-1],statuscol)).strip() in {'不符合','不上拍','否'}}
             inventory.extend({'code':c,'source':f'{file_name} · {sheet} · 第 {r} 行','excluded':r in rejected,'reason':('鉴定不符合' if str(get(rows[r-1],statuscol)).strip()=='不符合' else '原表明确不上拍') if r in rejected else ''} for r,c in code_rows.items())
             if column_hints is not None and sheet not in column_hints:break
@@ -66,7 +68,12 @@ def parse_tables(tables,merges,file_name,normalize,column_hints=None):
                 if sessioncol is not None and not session:
                     merged=next((m for m in merges.get(sheet,[]) if m[0]<=rownum<=m[1] and m[2]==sessioncol+1),None)
                     if merged:session=str(get(rows[merged[0]-1],sessioncol) or '').strip()
-                plans.append({'fields':{'拍品名称':title,'起拍价':price},'source':source,'grouping':{'file':file_name,'sheet':sheet,'rows':member_rows,'codes':members,'titleColumn':titlecol+1,'priceColumn':pricecol+1,'idColumn':idcol+1,'headerRow':h+1,'groupColumn':groupcol+1,'sessionName':session,**({'sessionColumn':sessioncol+1} if sessioncol is not None else {})}})
+                extras={}
+                for key,col in (hint or {}).get('fields',{}).items():
+                    values_in_group={normalize(key,get(rows[r-1],col),str(values[col])) for r in member_rows if get(rows[r-1],col) not in ('',None)}
+                    if len(values_in_group)>1:raise ValueError(f'{sheet} 第 {rownum} 行：同一拍品的{key}有多个不同值，请核对原表')
+                    if values_in_group:extras[key]=values_in_group.pop()
+                plans.append({'fields':{**extras,'拍品名称':title,'起拍价':price},'source':source,'grouping':{'file':file_name,'sheet':sheet,'rows':member_rows,'codes':members,'titleColumn':titlecol+1,'priceColumn':pricecol+1,'idColumn':idcol+1,'headerRow':h+1,'groupColumn':groupcol+1,'sessionName':session,**({'dataStartRow':start} if h<0 else {}),**({'fieldColumns':hint['fields']} if hint and hint.get('fields') else {}),**({'statusColumn':statuscol+1} if statuscol is not None else {}),**({'sessionColumn':sessioncol+1} if sessioncol is not None else {})}})
                 consumed.update(member_rows);covered.update(members)
             break
     if not plans and not any(x['excluded'] for x in inventory):return None

@@ -48,8 +48,10 @@ async function busy(work) {
   document.body.classList.add('busy');
   const main = document.querySelector('main'); main.setAttribute('aria-busy','true');
   progressStarted=Date.now();updateProgress({message:'正在准备处理',percent:0,remainingSeconds:null});
+  $('progress-request').hidden=true;$('progress-request').dataset.started='';
   const opening=setTimeout(()=>{if(!$('progress-dialog').open)$('progress-dialog').showModal();},250);
   progressTimer=setInterval(()=>{$('progress-elapsed').textContent=`已用时 ${Math.floor((Date.now()-progressStarted)/1000)} 秒`;
+    const request=$('progress-request');if(request.dataset.started)request.textContent=`第 ${request.dataset.count} 次 AI 请求 · 已等待 ${Math.max(0,Math.floor((Date.now()-Number(request.dataset.started))/1000))} 秒`;
     if(Date.now()-Number($('progress-time').dataset.updated||0)>15000)$('progress-time').textContent='本阶段预计剩余：正在重新估算';},1000);
   try { await work(); } catch (e) { status(e.message, true); }
   finally { clearTimeout(opening);clearInterval(progressTimer);$('progress-dialog').close();document.body.classList.remove('busy'); main.removeAttribute('aria-busy'); }
@@ -58,6 +60,7 @@ function updateProgress(event) {
   if(event.message)$('progress-message').textContent=event.message;
   if(Number.isFinite(event.percent)){$('progress-bar').value=event.percent;$('progress-percent').textContent=`${Math.round(event.percent)}%`;}
   if(Object.hasOwn(event,'remainingSeconds')){const updated=event.progressAt?event.progressAt*1000:Date.now();$('progress-time').dataset.updated=String(updated);$('progress-time').textContent=Number.isFinite(event.remainingSeconds)&&Date.now()-updated<15000?`本阶段预计剩余：约 ${Math.max(1,event.remainingSeconds)} 秒`:'本阶段预计剩余：正在估算';}
+  if(event.requestCount){const request=$('progress-request');request.hidden=false;request.dataset.count=String(event.requestCount);request.dataset.started=event.requestStartedAt?String(event.requestStartedAt*1000):'';request.textContent=event.requestStartedAt?`第 ${event.requestCount} 次 AI 请求 · 正在等待模型返回`:`第 ${event.requestCount} 次 AI 请求完成 · 耗时 ${event.lastRequestSeconds??0} 秒`;}
 }
 $('progress-dialog').addEventListener('cancel',event=>event.preventDefault());
 function saveState() {
@@ -153,7 +156,7 @@ function render() {
   $('ai-result').hidden = !ai;
   if (ai) {
     const completed = ai.status === 'completed';
-    $('ai-result').innerHTML = `<strong>${completed ? 'AI 识别与复核已完成' : 'AI 尚未完成全部资料'}</strong><p>${completed ? `处理 ${ai.stats.completed}/${ai.stats.total} 段，补充 ${ai.stats.filled} 个字段，新增 ${ai.stats.created} 个标的。` : escape(userError(ai.message || '上次任务中断，可以重新复核。'))}</p>${ai.files?.length?`<details><summary>查看逐文件处理结果</summary>${ai.files.map(f=>`<p><b>${escape(f.status)}</b> · ${escape(f.name)}<br>${escape(f.message||'已返回结构化结果并检查原文依据')}</p>`).join('')}</details>`:''}${project.aiIssues?.length ? `<details><summary>${project.aiIssues.length} 条识别提示</summary>${project.aiIssues.map(x=>`<p>${escape(userError(x))}</p>`).join('')}</details>` : ''}`;
+    $('ai-result').innerHTML = `<strong>${completed ? 'AI 识别与复核已完成' : 'AI 尚未完成全部资料'}</strong><p>${completed ? `处理 ${ai.stats.completed}/${ai.stats.total} 项，补充 ${ai.stats.filled} 个字段，新增 ${ai.stats.created} 个标的。` : escape(userError(ai.message || '上次任务中断，可以重新复核。'))}</p>${ai.stats.requests?`<p>AI 请求 ${ai.stats.requests} 次，累计等待 ${ai.stats.requestSeconds} 秒。</p>`:''}${ai.files?.length?`<details><summary>查看逐文件处理结果</summary>${ai.files.map(f=>`<p><b>${escape(f.status)}</b> · ${escape(f.name)}<br>${escape(f.message||'已返回结构化结果并检查原文依据')}</p>`).join('')}</details>`:''}${project.aiIssues?.length ? `<details><summary>${project.aiIssues.length} 条识别提示</summary>${project.aiIssues.map(x=>`<p>${escape(userError(x))}</p>`).join('')}</details>` : ''}`;
   }
   $('source-texts').innerHTML = (project?.files || []).map(f => `<details class="source-file"><summary>${escape(f.name)} · ${escape(f.status)}</summary>${(f.notes || []).map(n => `<p class="danger">${escape(n)}</p>`).join('')}<pre>${escape(f.text || '未提取到文字，可参考原件补填。')}</pre></details>`).join('');
   const issues = (project?.files || []).filter(f => f.status === '读取失败' || (project.analyzed && f.kind === 'document' && (f.status === '未提取文字' || f.notes?.length)));

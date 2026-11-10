@@ -39,13 +39,17 @@ test('persistent disconnect keeps job for next-page recovery',async()=>{
 });
 
 test('progress displays measured ETA and discards stale estimates',()=>{
-  const elements=Object.fromEntries(['progress-message','progress-bar','progress-percent','progress-time'].map(id=>[id,{dataset:{}}]));
+  const elements=Object.fromEntries(['progress-message','progress-bar','progress-percent','progress-time','progress-request'].map(id=>[id,{dataset:{}}]));
   const ctx=vm.createContext({$:id=>elements[id],Date});
   vm.runInContext(script.slice(script.indexOf('function updateProgress('),script.indexOf("$('progress-dialog').addEventListener")),ctx);
   ctx.updateProgress({message:'正在处理图片',percent:25,remainingSeconds:30,progressAt:Date.now()/1000});
   assert.equal(elements['progress-percent'].textContent,'25%');assert.match(elements['progress-time'].textContent,/30 秒/);
   ctx.updateProgress({remainingSeconds:30,progressAt:Date.now()/1000-20});
   assert.match(elements['progress-time'].textContent,/正在估算/);
+  ctx.updateProgress({requestCount:2,requestStartedAt:Date.now()/1000});
+  assert.match(elements['progress-request'].textContent,/第 2 次 AI 请求/);assert.equal(elements['progress-request'].hidden,false);
+  ctx.updateProgress({requestCount:2,requestStartedAt:null,lastRequestSeconds:6.2});
+  assert.match(elements['progress-request'].textContent,/耗时 6.2 秒/);assert.equal(elements['progress-request'].dataset.started,'');
 });
 
 test('failed empty import can retry but existing lots remain protected',()=>{

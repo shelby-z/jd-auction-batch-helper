@@ -111,20 +111,22 @@ def baseline(p,progress=None):
                 if group.get('file')!=file['name']:continue
                 sheet=group['sheet'];rows=next((rows for rows,s in tables if s==sheet),[])
                 header=group.get('headerRow')
-                if not header:
+                if header is None:
                     header=next((i+1 for i,row in enumerate(rows) if any(core.classification.header(v) in core.classification.ID_HEADERS for v in row)),None)
-                if not header:continue
+                if header is None:continue
                 idcol=group.get('idColumn') or next((i+1 for i,v in enumerate(rows[header-1]) if core.classification.header(v) in core.classification.ID_HEADERS),None)
                 if not idcol:continue
                 hint={'headerRow':header,'id':idcol-1,'name':group['titleColumn']-1,'price':group['priceColumn']-1}
-                for prop,key in [('groupColumn','group'),('sessionColumn','session')]:
+                if header==0:hint['dataStartRow']=group.get('dataStartRow',1)
+                if group.get('fieldColumns'):hint['fields']=group['fieldColumns']
+                for prop,key in [('groupColumn','group'),('sessionColumn','session'),('statusColumn','status')]:
                     if prop in group:hint[key]=group[prop]-1
                 hints[sheet]=hint
             parsed=core.classification.parse_tables(tables,metadata,file['name'],core.normalize_value,hints or None)
             if parsed:
                 for plan in parsed['plans']:
                     g=plan['grouping'];rows=next(rows for rows,s in tables if s==g['sheet'])
-                    header=rows[g['headerRow']-1];row=rows[g['rows'][0]-1]
+                    header=rows[g['headerRow']-1] if g['headerRow'] else [];row=rows[g['rows'][0]-1]
                     extras={source_key(v,definitions):core.normalize_value(source_key(v,definitions),row[i],str(v)) for i,v in enumerate(header) if i<len(row) and source_key(v,definitions) and row[i] not in ('',None)}
                     plan['fields']={**extras,**plan['fields']}
                 plans+=parsed['plans'];excluded+=parsed['excluded'];pending+=parsed['pending']

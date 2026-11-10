@@ -1,11 +1,22 @@
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
 import importlib.util,threading,time,unittest
 ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('jd_batch_server_test',ROOT/'scripts/jd-batch-server.py')
 server=importlib.util.module_from_spec(spec);spec.loader.exec_module(server)
 
 class JobTests(unittest.TestCase):
+    def test_public_page_navigation_does_not_allow_cross_site_data_access(self):
+        headers={'Host':'127.0.0.1:4186','Sec-Fetch-Site':'cross-site','Sec-Fetch-Mode':'navigate','Sec-Fetch-Dest':'document'}
+        request=SimpleNamespace(headers=headers,server=SimpleNamespace(server_port=4186))
+        self.assertTrue(server.Handler.same_origin(request,True))
+        self.assertFalse(server.Handler.same_origin(request))
+        for change in ({'Sec-Fetch-Dest':'iframe'},{'Sec-Fetch-Mode':'cors'},{'Host':'example.com:4186'},{'Origin':'https://example.com'}):
+            with self.subTest(change=change):
+                request.headers=headers|change
+                self.assertFalse(server.Handler.same_origin(request,True))
+
     def test_export_reports_measured_eta_and_rejects_overlapping_mutation(self):
         ready=threading.Event();release=threading.Event()
         def export(p,draft,progress):

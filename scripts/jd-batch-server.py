@@ -29,6 +29,10 @@ def start_job(project_id,body,kind='analyze'):
     def progress(event):
         with jobs_guard:
             if isinstance(event,str):job['message']=event;return
+            if event.get('phase')=='request':
+                for key in ('message','requestCount','requestStartedAt','lastRequestSeconds'):
+                    if key in event:job[key]=event[key]
+                return
             phase=event.get('phase','work');completed=event.get('completed',0);total=event.get('total',0)
             if phase_clock['phase']!=phase:phase_clock.update(phase=phase,time=time.monotonic(),initial=completed)
             fraction=completed/total if total else 0
@@ -112,16 +116,18 @@ class Handler(BaseHTTPRequestHandler):
             return path
         except Exception:path.unlink(missing_ok=True);raise
 
-    def same_origin(self):
+    def same_origin(self,allow_navigation=False):
         host=self.headers.get('Host','')
         if host not in {f'127.0.0.1:{self.server.server_port}',f'localhost:{self.server.server_port}'}: return False
         origin=self.headers.get('Origin')
-        return (not origin or origin=='http://'+host) and self.headers.get('Sec-Fetch-Site')!='cross-site'
+        public_navigation=allow_navigation and not origin and self.headers.get('Sec-Fetch-Mode')=='navigate' and self.headers.get('Sec-Fetch-Dest')=='document'
+        return (not origin or origin=='http://'+host) and (self.headers.get('Sec-Fetch-Site')!='cross-site' or public_navigation)
 
     def do_GET(self):
         try:
-            if not self.same_origin(): return self.respond(403,{'error':'仅允许本机同源访问'})
             path=urlsplit(self.path).path
+            # A browser link may open the public page; project data still requires same-origin access.
+            if not self.same_origin(path in {'/','/jd-batch.html'}): return self.respond(403,{'error':'仅允许本机同源访问'})
             assets={'/':'jd-batch.html','/jd-batch.html':'jd-batch.html','/jd-batch.css':'jd-batch.css','/jd-batch.js':'jd-batch.js'}
             if path in assets:
                 name=assets[path]; return self.send_bytes(200,(ROOT/'public'/name).read_bytes(),{'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8'}[Path(name).suffix])
