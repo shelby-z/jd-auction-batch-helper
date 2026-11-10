@@ -17,6 +17,7 @@ def error_message(error,stage):return diagnostic(error,ROOT/'logs',stage)
 
 locks={}; locks_guard=threading.Lock()
 jobs={}; jobs_guard=threading.Lock()
+job_cancels={}
 def lock_for(key):
     with locks_guard: return locks.setdefault(key,threading.RLock())
 
@@ -25,6 +26,7 @@ def start_job(project_id,body,kind='analyze'):
         running=next((j for j in jobs.values() if j['projectId']==project_id and j['state']=='running'),None)
         if running:raise ValueError('本项目还有任务正在进行，请等待完成后重试')
         job={'id':uuid.uuid4().hex,'projectId':project_id,'kind':kind,'state':'running','message':'正在准备处理','percent':0,'remainingSeconds':None,'startedAt':time.time()};jobs[job['id']]=job
+        cancel=threading.Event();job_cancels[job['id']]=cancel;job['cancellable']=kind=='analyze' and bool(body.get('ai'))
     phase_clock={'phase':None,'time':time.monotonic()}
     def progress(event):
         with jobs_guard:
@@ -49,7 +51,7 @@ def start_job(project_id,body,kind='analyze'):
             with lock_for(project_id):
                 p=core.load(project_id)
                 result=None
-                if kind=='export':result=core.export(p,body.get('draft') is True,progress)
+                if kind=='export':result=core.export(p,body.get('draft') is True,progress,allow_issues=body.get('allowIssues') is True)
                 elif kind=='audit-unlock':result=audit.preview(p,body['auditId'],body.get('password',''),progress)
                 elif kind=='audit-run':result=audit.run(p,body,progress)
                 elif kind=='files':
@@ -70,11 +72,13 @@ def start_job(project_id,body,kind='analyze'):
                 if kind=='analyze' and body.get('ai'):
                     progress({'message':'AI 正在识别表格分类结构','phase':'schema','completed':0,'total':0})
                     with jobs_guard:job['percent']=25
-                    ai.recognize(p,progress)
+                    ai.recognize(p,progress,cancel=cancel)
                 with jobs_guard:job.update(state='completed',message='处理完成',percent=100,remainingSeconds=0,result=result,finishedAt=time.time())
         except Exception as e:
             with jobs_guard:job.update(state='failed',message=error_message(e,{'export':'生成上拍包','audit-unlock':'读取专场导出包','audit-run':'专场复核','files':'资料归档'}.get(kind,'读取资料与 AI 识别')),finishedAt=time.time())
-        finally:body.pop('password',None)
+        finally:
+            body.pop('password',None)
+            with jobs_guard:job_cancels.pop(job['id'],None)
     threading.Thread(target=run,daemon=True).start()
     return dict(job)
 
@@ -170,6 +174,14 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if not self.same_origin(): return self.respond(403,{'error':'仅允许本机同源访问'})
             path=urlsplit(self.path).path
+            cancel_match=re.fullmatch(r'/api/jobs/([a-f0-9]{32})/cancel',path)
+            if cancel_match:
+                self.body(1000)
+                with jobs_guard:
+                    identifier=cancel_match[1];job=jobs.get(identifier)
+                    if not job or not job.get('cancellable'):return self.respond(400,{'error':'当前任务不支持停止'})
+                    if identifier in job_cancels:job_cancels[identifier].set()
+                return self.respond(200,{'message':'正在停止 AI，已保存结果保留'})
             if path=='/api/ai/config':return self.respond(200,ai.save_config(json.loads(self.body(20000))))
             if path=='/api/ai/test':
                 self.body(20000)
@@ -208,7 +220,7 @@ class Handler(BaseHTTPRequestHandler):
                     if action=='analyze': core.analyze(p,body.get('ocr',True))
                     elif action=='review': core.update_review(p,body)
                     elif action=='common': core.apply_common(p,body)
-                    elif action=='export': return self.respond(200,core.export(p,body.get('draft') is True))
+                    elif action=='export': return self.respond(200,core.export(p,body.get('draft') is True,allow_issues=body.get('allowIssues') is True))
                     elif action=='audit-unlock':return self.respond(200,audit.preview(p,body['auditId'],body.get('password','')))
                     elif action=='audit-run':return self.respond(200,audit.run(p,body))
                 self.respond(200,{'project':p,'validation':core.validate(p)})

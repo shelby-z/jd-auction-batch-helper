@@ -20,7 +20,7 @@ test('API failure does not expose raw English response',async()=>{
 });
 function polling(responses) {
   const saved=new Map([['jd-batch-job','saved']]);let calls=[],accepted=false;
-  const ctx=context({localStorage:{removeItem:key=>saved.delete(key)},setTimeout:fn=>fn(),accept:()=>{accepted=true;},recent:async()=>{},showStep:async()=>{},project:{lots:[]}});
+  const ctx=context({localStorage:{removeItem:key=>saved.delete(key)},setTimeout:fn=>fn(),accept:()=>{accepted=true;},recent:async()=>{},showStep:async()=>{},project:{lots:[]},$:()=>null});
   ctx.status=()=>{};ctx.updateProgress=()=>{};
   ctx.api=async path=>{calls.push(path);if(path.includes('/projects/'))return {};const next=responses.shift();if(next instanceof Error)throw next;return next;};
   vm.runInContext(script.slice(script.indexOf('async function waitAnalysis('),script.lastIndexOf('await busy(async()=>')),ctx);
@@ -60,4 +60,22 @@ test('failed empty import can retry but existing lots remain protected',()=>{
   assert.equal(ctx.canRetryRead({...failed,lots:[{id:'already-reviewed'}]}),false);
   assert.equal(ctx.canRetryRead({...failed,files:[{kind:'document',status:'已读取',text:'已有资料'}]}),false);
   assert.equal(ctx.canRetryRead(null),false);
+});
+
+test('folder assignment includes descendants, moves ownership and keeps the main photo',()=>{
+  const ctx=vm.createContext({});
+  vm.runInContext(script.slice(script.indexOf('function folderImages('),script.indexOf('function renderFolderPicker(')),ctx);
+  const p={files:[{id:'a',kind:'image',name:'B243/243-1/a.jpg',ignored:true},{id:'b',kind:'image',name:'B243/243-2/b.jpg'},{id:'c',kind:'image',name:'B2430/c.jpg'}],lots:[{id:'one',imageIds:['b']},{id:'two',imageIds:['a','c']}]};
+  assert.equal(ctx.assignFolder(p,'one','B243'),2);
+  assert.equal(p.lots[0].imageIds.join(','),'b,a');assert.equal(p.lots[1].imageIds.join(','),'c');assert.equal(p.files[0].ignored,false);
+  assert.equal(p.lots[0].manualImages,true);assert.equal(p.lots[1].manualImages,true);
+});
+
+test('confirmed manual review enables export even with unresolved image reminders',()=>{
+  const elements=Object.fromEntries(['validation','export-ready','package-tree'].map(id=>[id,{querySelectorAll:()=>[],insertAdjacentHTML(){}}]));
+  const p={lots:[{fields:{'图片文件夹名称':'1'},imageIds:[]}],reviewed:true};
+  const ctx=vm.createContext({$:id=>elements[id],project:p,validation:{errors:[{message:'没有单独目录'}],warnings:[]},escape:String});
+  vm.runInContext(script.slice(script.indexOf('function renderValidation('),script.indexOf('async function upload(')),ctx);
+  ctx.renderValidation();assert.equal(elements['export-ready'].disabled,false);assert.match(elements['export-ready'].textContent,/已人工核对/);
+  p.reviewed=false;ctx.renderValidation();assert.equal(elements['export-ready'].disabled,true);
 });

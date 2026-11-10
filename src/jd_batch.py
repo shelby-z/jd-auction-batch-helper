@@ -453,6 +453,9 @@ def apply_classification(p,records,summary,source_label='分类表'):
         candidates=[l for l in work['lots'] if set(l.get('grouping',{}).get('codes',[]))==members]
         if not candidates:
             candidates=[l for l in work['lots'] if l['fields'].get('拍品名称')==record['fields']['拍品名称']]
+        if not candidates:
+            known={c for r in records for c in r['grouping']['codes']}
+            candidates=[l for l in work['lots'] if not l.get('grouping') and classification.title_codes(l['fields'].get('拍品名称',''),known)==members]
         old=candidates[0] if len(candidates)==1 and candidates[0]['id'] not in matched else None
         lot=deepcopy(old) if old else empty_lot(work['template'])
         if old:matched.add(old['id'])
@@ -560,7 +563,7 @@ def validate(p):
                 if f['id'] not in lot.get('imageIds',[]):continue
                 codes=classification.image_codes(f['name'],all_codes);covered|=codes
                 if codes-members:error('图片','图片编号 '+','.join(sorted(codes-members))+' 不属于该分类组合')
-            if members-covered:error('图片','分类组合缺少图片：'+','.join(sorted(members-covered)))
+            if lot.get('imageIds') and members-covered:warnings.append(title+'：已关联 '+str(len(lot['imageIds']))+' 张图片，部分编号没有单独目录；若为整批共用照片，可人工确认后导出。未单独匹配：'+','.join(sorted(members-covered)))
         for key in lot.get('conflicts',{}): error(key,key+'存在来源冲突，请选定或填写正确值')
         if len(lot.get('imageIds',[]))>10: warnings.append(title+'超过 10 张照片；前 10 张设为轮播图，其余保留为详情图片')
     unassigned=[f for f in p['files'] if f['kind']=='image' and f['id'] not in used and not f.get('ignored')]
@@ -747,10 +750,12 @@ def prepare_image(blob):
         if len(out.getvalue())<1_000_000: return out.getvalue()
     raise ValueError('图片压缩后仍超过 1 MB')
 
-def export(p,draft=False,progress=None):
+def export(p,draft=False,progress=None,allow_issues=False):
     result=validate(p)
-    if any(e['field']=='已排除标的' for e in result['errors']):raise ValueError('包含已排除标的，请先移出鉴定不符合或明确不上拍的素材')
-    if result['errors'] and not draft: raise ValueError('还有待补充或待核对内容，不能生成正式上拍包')
+    override=allow_issues is True and p.get('reviewed') is True
+    if allow_issues and not override:raise ValueError('请先勾选已人工核对，再按当前内容导出')
+    if any(e['field']=='已排除标的' for e in result['errors']) and not override:raise ValueError('包含已排除标的，请先核对；如属识别误判，可人工确认后按当前内容导出')
+    if result['errors'] and not draft and not override: raise ValueError('还有核对提醒；可修改后导出，或人工确认后按当前内容导出')
     if not p['lots']: raise ValueError('请先新增标的')
     folders=[l['fields'].get('图片文件夹名称','').casefold() for l in p['lots']]
     if len(set(folders))!=len(folders): raise ValueError('图片目录名不能重复，待补资料包也需保持一一对应')
@@ -768,6 +773,7 @@ def export(p,draft=False,progress=None):
             folder=lot['fields'].get('图片文件夹名称','')
             # A draft with unsafe or missing folders must never create unsafe archive paths.
             if not valid_folder(folder): raise ValueError('请先填写安全且唯一的图片目录名')
+            if not lot['imageIds']:z.writestr(f'图片/{folder}/','')
             for n,file_id in enumerate(lot['imageIds'],1):
                 f=next(x for x in p['files'] if x['id']==file_id)
                 target=f'图片/{folder}/'+(f'zt{n}.jpg' if n<=10 else f'detail{n:03d}.jpg')
@@ -780,7 +786,7 @@ def export(p,draft=False,progress=None):
     folder=OUTPUTS/p['id']; folder.mkdir(parents=True,exist_ok=True)
     if progress:progress({'message':'正在保存压缩包和核对记录','completed':total-1,'total':total})
     (folder/(stem+'.zip')).write_bytes(output.getvalue())
-    report={'project':p['name'],'template':templates()[p['template']]['filename'],'templateSha256':templates()[p['template']]['sha256'],'draft':draft,'validation':result,'mapping':mapping,'lots':p['lots'],'note':'手册 2023-02-27，用户模板包 20260202。后台导入、剩余字段配置和提交尚需在京东完成。'}
+    report={'project':p['name'],'template':templates()[p['template']]['filename'],'templateSha256':templates()[p['template']]['sha256'],'draft':draft,'manualOverride':override,'validation':result,'mapping':mapping,'lots':p['lots'],'note':'手册 2023-02-27，用户模板包 20260202。后台导入、剩余字段配置和提交尚需在京东完成。'}
     (folder/(stem+'_核对记录.json')).write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf8')
     p['lastExport']=stem+'.zip'; p['lastReport']=stem+'_核对记录.json'; save(p)
     return {'filename':stem+'.zip','report':p['lastReport'],'validation':result}

@@ -89,7 +89,7 @@ class ClassificationTests(unittest.TestCase):
     def test_wrong_or_missing_group_images_are_reported(self):
         p=self.project();a,b=p['lots'];a['imageIds'].append(b['imageIds'].pop());errors=core.validate(p)['errors']
         self.assertTrue(any('不属于该分类组合' in e['message'] for e in errors))
-        self.assertTrue(any('缺少图片：B003' in e['message'] for e in errors))
+        self.assertTrue(any('至少分配一张' in e['message'] and e['lot']==b['id'] for e in errors))
 
     def legacy_project(self):
         p=self.project();p.pop('classification')

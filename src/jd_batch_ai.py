@@ -6,6 +6,7 @@ from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 from urllib.error import HTTPError, URLError
 import ipaddress, json, os, re, socket, threading, hashlib, time
+import queue as request_queue
 import jd_batch as core
 from jd_batch_errors import AIError, chinese_error
 
@@ -353,7 +354,24 @@ def extraction_payload(p,source):
     return {'sources':[source],'template':{'fields':fields},'classificationControlsLots':bool(p.get('classification')),'existingLots':relevant[:8]}
 
 
-def recognize(p,progress=None,complete_fn=None):
+def cancellable_request(invoke,prompt,payload,cancel=None,timeout=90):
+    result=request_queue.Queue(maxsize=1)
+    def run():
+        try:result.put((True,invoke(prompt,payload)))
+        except Exception as error:result.put((False,error))
+    if cancel and cancel.is_set():raise AIError('已停止 AI 处理，已保存的结果和人工修改保留。','AI_CANCELLED')
+    threading.Thread(target=run,daemon=True).start();deadline=time.monotonic()+timeout
+    while True:
+        if cancel and cancel.is_set():raise AIError('已停止 AI 处理，已保存的结果和人工修改保留。','AI_CANCELLED')
+        remaining=deadline-time.monotonic()
+        if remaining<=0:raise AIError('本次 AI 请求超过 90 秒，已停止等待并保留结果；可稍后重试或更换模型。','AI_TIMEOUT')
+        try:ok,value=result.get(timeout=min(.1,remaining))
+        except request_queue.Empty:continue
+        if cancel and cancel.is_set():raise AIError('已停止 AI 处理，已保存的结果和人工修改保留。','AI_CANCELLED')
+        if ok:return value
+        raise value
+
+def recognize(p,progress=None,complete_fn=None,cancel=None):
     invoke=complete_fn or complete
     c=read_config()
     if complete_fn is None and not public_config(c)['configured']:raise ValueError('请先设置 API')
@@ -363,17 +381,20 @@ def recognize(p,progress=None,complete_fn=None):
         metrics['requests']+=1;started=time.monotonic()
         label='识别表格结构' if prompt==GROUPING_PROMPT else '复核表格结构' if prompt.startswith(GROUPING_PROMPT) else '复核字段' if prompt==REVIEW_PROMPT else '提取字段'
         if progress:progress({'phase':'request','message':f'第 {metrics["requests"]} 次 AI 请求：{label}','requestCount':metrics['requests'],'requestStartedAt':time.time()})
-        try:return invoke(prompt,payload)
+        try:return cancellable_request(invoke,prompt,payload,cancel) if complete_fn is None or cancel is not None else invoke(prompt,payload)
         finally:
             elapsed=round(time.monotonic()-started,2);metrics['lastRequestSeconds']=elapsed;metrics['requestSeconds']=round(metrics['requestSeconds']+elapsed,2)
             if progress:progress({'phase':'request','requestCount':metrics['requests'],'requestStartedAt':None,'lastRequestSeconds':elapsed})
     p['aiIssues']=[];failures=[];reports=[];schema_failed=False
     p['ai']={'status':'running','message':'正在识别表格结构','stats':dict(metrics),'files':[]};core.save(p)
     handled={}
-    try:handled=recognize_grouping(p,call,progress) or {}
+    try:
+        handled=recognize_grouping(p,call,progress) or {}
+        if set(p.get('classification',{}).get('files',[]))-set(handled):raise ValueError('AI 未能确认已有分类表，已保留当前分组和人工修改；请核对表格结构后再试')
     except Exception as e:
-        # Do not create new lots from a classification whose structure was not verified.
-        schema_failed=True;message='分类表结构识别未完成：'+chinese_error(e);failures.append(message);p['aiIssues'].append(message)
+        message='分类表结构识别未完成：'+chinese_error(e);p['aiIssues'].append(message)
+        p['ai']={'status':'failed','message':message,'stats':dict(metrics),'files':[],'checkpoints':previous.get('checkpoints',[])};core.save(p)
+        raise ValueError(message) from None
     source_list=list(chunks(p,handled=handled));structured=len(handled)
     stats={'filled':0,'created':0,'rejected':0,'completed':structured,'total':len(source_list)+structured}
     for file in p['files']:
@@ -421,6 +442,8 @@ def recognize(p,progress=None,complete_fn=None):
             else:done.add(signature)
             reports.append(report);checkpoint()
         except Exception as e:
+            if isinstance(e,AIError) and e.code in {'AI_CANCELLED','AI_TIMEOUT'}:
+                checkpoint('partial' if stats['completed'] else 'failed',chinese_error(e));raise
             if isinstance(e,AIError) and e.split and len(source['text'])>600:
                 text=source['text'];middle=len(text)//2;boundary=text.rfind('\n',len(text)//3,middle+1);middle=boundary+1 if boundary>=0 else middle
                 queue[0:0]=[source|{'id':source['id']+'a','text':text[:middle]},source|{'id':source['id']+'b','text':text[middle:]}];stats['total']+=1

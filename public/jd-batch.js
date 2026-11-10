@@ -3,6 +3,7 @@ const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&am
 let templates = [], project = null, validation = { errors: [], warnings: [] }, selected = '', step = 'import', revision = 0, savedRevision = 0, pendingSaves = 0, saveError = '', timer, saveQueue = Promise.resolve();
 let aiConfig = { configured: false };
 let auditSetup=null, progressStarted=0, progressTimer=null;
+let activeJob=null;
 const expandedPhotos = new Set();
 const photoLimit = 6;
 const outputImageName = index => index < 10 ? `zt${index+1}.jpg` : `detail${String(index+1).padStart(3,'0')}.jpg`;
@@ -54,7 +55,7 @@ async function busy(work) {
     const request=$('progress-request');if(request.dataset.started)request.textContent=`第 ${request.dataset.count} 次 AI 请求 · 已等待 ${Math.max(0,Math.floor((Date.now()-Number(request.dataset.started))/1000))} 秒`;
     if(Date.now()-Number($('progress-time').dataset.updated||0)>15000)$('progress-time').textContent='本阶段预计剩余：正在重新估算';},1000);
   try { await work(); } catch (e) { status(e.message, true); }
-  finally { clearTimeout(opening);clearInterval(progressTimer);$('progress-dialog').close();document.body.classList.remove('busy'); main.removeAttribute('aria-busy'); }
+  finally { activeJob=null;$('stop-ai').hidden=true;clearTimeout(opening);clearInterval(progressTimer);$('progress-dialog').close();document.body.classList.remove('busy'); main.removeAttribute('aria-busy'); }
 }
 function updateProgress(event) {
   if(event.message)$('progress-message').textContent=event.message;
@@ -188,6 +189,23 @@ function fieldMarkup(def, value, source, prefix = 'field') {
   const control = def.options.length ? `<select id="${id}" data-key="${escape(def.key)}"><option value="">请选择</option>${def.options.map(o=>`<option ${o===value?'selected':''}>${escape(o)}</option>`).join('')}${value && !def.options.includes(value) ? `<option selected>${escape(value)}</option>` : ''}</select>` : `<input id="${id}" data-key="${escape(def.key)}" value="${escape(value)}" ${['拍品名称','委托方名称'].includes(def.key)?'maxlength="50"':''}>`;
   return `<div class="field"><label for="${id}">${escape(def.key)}${def.required?'<span class="required-mark">*</span>':''}</label>${control}<small class="source" title="${escape(def.hint)}">${escape(source || def.hint)}</small></div>`;
 }
+function folderImages(files,folder) {
+  return files.filter(f=>f.kind==='image'&&(folder==='.'||f.name.replaceAll('\\','/').startsWith(folder+'/')));
+}
+function assignFolder(p,lotId,folder) {
+  const images=folderImages(p.files,folder),ids=new Set(images.map(f=>f.id));
+  const target=p.lots.find(l=>l.id===lotId);if(!target)throw new Error('请先选择拍品');
+  for(const lot of p.lots)if(lot.id!==lotId&&lot.imageIds.some(id=>ids.has(id))){lot.imageIds=lot.imageIds.filter(id=>!ids.has(id));lot.manualImages=true;}
+  target.imageIds=[...new Set([...target.imageIds,...ids])];target.manualImages=true;
+  for(const f of images){f.ignored=false;delete f.ignoreReason;f.lotId=lotId;}
+  return images.length;
+}
+function renderFolderPicker() {
+  const folders=new Set();
+  for(const f of project.files.filter(f=>f.kind==='image')){const parts=f.name.replaceAll('\\','/').split('/');if(parts.length===1)folders.add('.');for(let i=1;i<parts.length;i++)folders.add(parts.slice(0,i).join('/'));}
+  $('image-folder').innerHTML='<option value="">选择原始图片文件夹（包含子目录）</option>'+[...folders].sort((a,b)=>a.localeCompare(b,'zh-CN',{numeric:true})).map(folder=>`<option value="${escape(folder)}">${escape(folder==='.'?'所有图片（含子目录）':folder)} · ${folderImages(project.files,folder).length} 张</option>`).join('');
+}
+$('assign-folder').onclick=()=>busy(async()=>{const folder=$('image-folder').value,lot=currentLot();if(!folder||!lot)throw new Error('请先选择拍品和图片文件夹');const ids=new Set(folderImages(project.files,folder).map(f=>f.id));const moved=project.lots.filter(l=>l.id!==lot.id).reduce((n,l)=>n+l.imageIds.filter(id=>ids.has(id)).length,0);if(moved&&!confirm(`该目录有 ${moved} 张图片已属于其他拍品，是否移到当前拍品？`))return;const count=assignFolder(project,lot.id,folder);changed();await persist();render();status(`已将 ${count} 张图片归入当前拍品，原主图顺序保留。`);});
 function renderEditor() {
   const lot = currentLot(); $('empty-lot').hidden = !!lot; $('lot-editor').hidden = !lot;
   if (!lot) return;
@@ -209,6 +227,7 @@ function renderEditor() {
     el.oninput = () => { lot.fields[key]=el.value;lot.editedFields=[...new Set([...(lot.editedFields||[]),key])]; lot.sources[key]='人工核对'; delete lot.conflicts[key]; el.classList.remove('invalid'); el.parentElement.querySelector('.conflict')?.remove();if(isCommon(key)){lot.commonOverrides=[...new Set([...(lot.commonOverrides||[]),key])];commonIndicators(lot);} changed(); if(key==='拍品名称'){ $('lot-title').textContent=el.value || '未命名标的'; renderLots(); } };
   }
   commonIndicators(lot);
+  renderFolderPicker();
   const expanded=expandedPhotos.has(lot.id),visible=expanded?lot.imageIds:lot.imageIds.slice(0,photoLimit);
   $('image-count').textContent=`共 ${lot.imageIds.length} 张 · 导出时自动重命名`;
   $('lot-images').innerHTML = visible.map((id,i)=>{
@@ -247,7 +266,9 @@ function renderValidation() {
   $('validation').innerHTML=validation.errors.length ? `<h3>${validation.errors.length} 项需要补充或核对</h3><ul class="validation-list">${validation.errors.map((e,i)=>`<li><button data-error="${i}">${escape(e.message)}</button></li>`).join('')}</ul>` : '<h3 class="pass">本地检查通过，可以生成上拍包</h3><p class="hint">京东后台解析结果仍需上传后确认。</p>';
   $('validation').innerHTML += validation.warnings.map(w=>`<p class="hint">${escape(w)}</p>`).join('');
   $('validation').querySelectorAll('[data-error]').forEach(b=>b.onclick=()=>busy(async()=>{const err=validation.errors[Number(b.dataset.error)]; if(err.field==='核对'){$('reviewed').focus();return;} if(err.lot)selected=err.lot; await showStep('review'); const def=fieldDefs().find(f=>f.key===err.field); if(def){const el=$('field-'+def.column); if(el){const d=el.closest('details');if(d)d.open=true;el.focus();}} else $('unassigned-images').scrollIntoView({block:'center'}); }));
-  $('export-ready').disabled=validation.errors.length>0;
+  $('export-ready').disabled=!project?.lots.length||!project.reviewed;
+  $('export-ready').textContent=validation.errors.length?'已人工核对，按当前内容生成 ZIP':'生成上拍 ZIP';
+  if(validation.errors.length)$('validation').insertAdjacentHTML('afterbegin','<p class="hint">以下是核对提醒。确认当前内容后，勾选上方“我已核对”即可继续导出；提醒会保存在核对记录中。</p>');
   $('package-tree').textContent='项目批量上拍_时间编号.zip\n├─ 项目批量上拍_时间编号.xlsx\n└─ 图片/\n'+(project?.lots||[]).map(l=>`    └─ ${l.fields['图片文件夹名称']||'待填写目录名'}/\n        ${l.imageIds.length?'zt1.jpg'+(l.imageIds.length>1?' …':''):'（待分配图片）'}`).join('\n');
 }
 async function upload(files) {
@@ -310,7 +331,7 @@ $('apply-common').onclick=()=>busy(async()=>{
   }catch(e){$('common-message').textContent=e.message;throw e;}
 });
 $('reviewed').onchange=()=>busy(async()=>{project.reviewed=$('reviewed').checked;revision++;await persist();renderValidation();});
-for(const [id,draft]of[['export-ready',false],['export-draft',true]])$(id).onclick=()=>busy(async()=>{await persist();status('正在填写模板、处理图片并生成 ZIP…');const {job}=await api(`/api/projects/${project.id}/export`,{draft,async:true});await trackJob(job);});
+for(const [id,draft]of[['export-ready',false],['export-draft',true]])$(id).onclick=()=>busy(async()=>{await persist();status('正在填写模板、处理图片并生成 ZIP…');const {job}=await api(`/api/projects/${project.id}/export`,{draft,allowIssues:!draft&&project.reviewed,async:true});await trackJob(job);});
 $('retry-save').onclick = () => busy(async () => { await persist(); status('修改已保存。'); });
 window.addEventListener('beforeunload',e=>{if(revision > savedRevision || pendingSaves > 0 || saveError){e.preventDefault();e.returnValue='';}});
 function uploadFile(url,file,onProgress) {
@@ -370,7 +391,9 @@ $('audit-run').onclick=()=>busy(async()=>{
   if(!$('audit-session').value||!$('audit-source').value)throw new Error('请选择要复核的京东专场和对应的原始表格范围');
   await persist();const {job}=await api(`/api/projects/${project.id}/audit-run`,{auditId:auditSetup.auditId,sessionId:$('audit-session').value,sourceSession:$('audit-source').value,images:$('audit-images').checked,visionModel:$('audit-model').value,async:true});await trackJob(job);
 });
+$('stop-ai').onclick=async()=>{if(!activeJob)return;$('stop-ai').disabled=true;try{await api(`/api/jobs/${activeJob.id}/cancel`,{});$('progress-message').textContent='正在停止 AI，保留已保存的结果…';}catch(error){$('stop-ai').disabled=false;status(error.message,true);}};
 async function waitAnalysis(job) {
+  activeJob=job;const stopButton=$('stop-ai');if(stopButton){stopButton.hidden=!job.cancellable;stopButton.disabled=false;}
   let current=job;
   let disconnected=0;
   while(current.state==='running') {

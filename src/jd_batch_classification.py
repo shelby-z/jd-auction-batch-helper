@@ -10,12 +10,20 @@ def header(value):
     return re.sub(r'[\s*＊（）()元万元]', '', str(value or ''))
 
 def code(value):
-    value=str(value or '').strip().upper()
-    return value if re.fullmatch(r'[A-Z]{1,8}\d{1,10}',value) else ''
+    value=re.sub(r'[—–－]', '-', str(value or '').strip().upper())
+    return value if re.fullmatch(r'[A-Z]{1,8}\d{1,10}(?:-\d{1,10})?',value) else ''
 
 def title_codes(title,known):
-    found=set(re.findall(r'(?<![A-Z0-9])([A-Z]{1,8}\d{1,10})(?![A-Z0-9])',title.upper())) & set(known)
-    for prefix,start,other,end in re.findall(r'([A-Z]+)(\d+)\s*[-—–~～至]\s*([A-Z]*)(\d+)',title.upper()):
+    title=re.sub(r'[—–－]','-',title.upper());known=set(known)
+    found=set(re.findall(r'(?<![A-Z0-9])([A-Z]{1,8}\d{1,10}(?:-\d{1,10})?)(?![A-Z0-9]|-\d)',title)) & known
+    for prefix,base,start,other,endbase,end in re.findall(r'([A-Z]+)(\d+)-(\d+)\s*(?:-+|[~～至到])\s*(?:([A-Z]+)(\d+)-)?(\d+)(?![\d-])',title):
+        if other and (other!=prefix or int(endbase)!=int(base)):continue
+        for item in known:
+            m=re.fullmatch(r'([A-Z]+)(\d+)-(\d+)',item)
+            if m and m[1]==prefix and int(m[2])==int(base) and int(start)<=int(m[3])<=int(end):found.add(item)
+    for match in re.finditer(r'(?<![A-Z0-9-])([A-Z]+)(\d+)\s*(?:-+|[~～至到])\s*([A-Z]*)(\d+)(?![A-Z0-9]|-\d)',title):
+        prefix,start,other,end=match.groups()
+        if code(match[0]) in known:continue
         if other and other!=prefix:continue
         for item in known:
             m=re.fullmatch(r'([A-Z]+)(\d+)',item)
@@ -84,9 +92,17 @@ def parse_tables(tables,merges,file_name,normalize,column_hints=None):
 def image_codes(name,known):
     parts=PurePosixPath(name.replace('\\','/')).parts
     # The nearest numbered directory identifies the photographed object.
-    for part in reversed(parts[:-1]):
+    for index in range(len(parts)-2,-1,-1):
+        part=parts[index]
+        if re.match(r'^\d+-\d+(?:\D|$)',part):
+            parent=next((code(p) for p in reversed(parts[:index]) if code(p)), '')
+            if parent and re.match(r'^'+re.escape(re.sub(r'^[A-Z]+','',parent))+r'-\d+',part):part=re.match(r'[A-Z]+',parent)[0]+part
         matches=title_codes(part,known)
         if matches:return matches
+        parent=code(part)
+        children={c for c in known if parent and c.startswith(parent+'-')}
+        if children:return children
+        if re.search(r'[A-Z]+\d+-\d+',part.upper()):return set()
     return title_codes(PurePosixPath(name).stem,known)
 
 def natural_key(name):
@@ -101,6 +117,7 @@ def assign_images(p,apply_exclusions=False):
         codes=image_codes(f['name'],known);parts=PurePosixPath(f['name']).parts;stem=PurePosixPath(f['name']).stem
         matches=[]
         for lot in lots:
+            if lot.get('manualImages'):continue
             title=lot['fields'].get('拍品名称','');members=set(lot.get('grouping',{}).get('codes',[]))
             folder=lot['fields'].get('图片文件夹名称','')
             if members:
