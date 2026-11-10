@@ -15,6 +15,9 @@ def chinese_error(error):
     if isinstance(error,PermissionError):return '没有文件夹的读写权限，请将整个工具移到桌面或其他可写文件夹后重试。'
     if isinstance(error,FileNotFoundError):return '所需文件不存在，请确认完整解压工具，或重新导入缺失的资料。'
     if isinstance(error,zipfile.BadZipFile):return '压缩包或表格文件损坏，请重新下载或另存后导入。'
+    if type(error).__module__.startswith('xlrd.'):
+        if 'encrypt' in str(error).lower():return 'Excel 表格已加密，请先在 Excel/WPS 中解除密码保护，另存后重新导入。'
+        return 'Excel 表格无法解析，可能是文件损坏或实际内容并非 Excel 格式。请在 Excel/WPS 中打开并另存为 XLSX 后重新导入。'
     if isinstance(error,UnicodeError):return '文件文字编码无法识别，请将文字文件另存为 UTF-8 后导入。'
     if isinstance(error,MemoryError):return '本机可用内存不足，请关闭占用内存的程序，或分批导入资料。'
     if isinstance(error,TimeoutError):return '连接等待超时，请检查网络后重试。'

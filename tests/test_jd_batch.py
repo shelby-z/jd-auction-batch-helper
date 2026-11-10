@@ -100,6 +100,40 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(len(p['lots']),2);self.assertEqual(p['lots'][1]['fields']['起拍价'],'24000')
         self.assertTrue(all(l['fields']['联系人电话_手机1']=='13800000000' for l in p['lots']))
 
+    def test_xlsx_named_xls_keeps_sheets_merges_and_prices(self):
+        wb=openpyxl.Workbook();ws=wb.active;ws.title='上拍安排'
+        ws.append(['标的名称','起拍价']);ws.append(['设备甲',16.7]);ws.append([None,None]);ws.merge_cells('A2:A3');ws.merge_cells('B2:B3')
+        wb.create_sheet('备注').append(['原件说明'])
+        out=BytesIO();wb.save(out);p=self.project();j.add_file(p,'导出表格.xls',out.getvalue())
+        file=p['files'][0];path=j.project_path(p['id'])/'files'/file['id'];metadata={}
+        text,tables,notes=j.read_document(path,file['name'],False,metadata)
+        self.assertEqual([title for _,title in tables],['上拍安排','备注'])
+        self.assertEqual(tables[0][0][1][1],16.7);self.assertCountEqual(metadata['上拍安排'],[[2,3,1,1],[2,3,2,2]])
+        self.assertEqual(notes,[]);self.assertIn('原件说明',text)
+        j.analyze(p,False);self.assertEqual(file['status'],'已读取');self.assertEqual(p['lots'][0]['fields']['起拍价'],'16.7')
+        self.assertEqual(path.read_bytes(),out.getvalue())
+
+    def test_legacy_xls_named_xlsx_is_detected(self):
+        import xlwt
+        wb=xlwt.Workbook();ws=wb.add_sheet('旧表');ws.write(0,0,'标的名称');ws.write(0,1,'起拍价');ws.write(1,0,'设备乙');ws.write(1,1,19)
+        out=BytesIO();wb.save(out)
+        text,tables,notes=j.read_document(out.getvalue(),'后缀写错.xlsx',False)
+        self.assertEqual(tables[0][0][1],['设备乙',19]);self.assertIn('设备乙',text);self.assertEqual(notes,[])
+
+    def test_failed_empty_project_can_retry_without_overwriting_lots(self):
+        p=self.project();j.add_file(p,'未读成功.xls',b'not an Excel file');j.analyze(p,False)
+        self.assertTrue(j.can_retry_read(p));self.assertEqual(p['files'][0]['status'],'读取失败')
+        self.assertIn('另存为 XLSX',p['files'][0]['notes'][0])
+        wb=openpyxl.Workbook();wb.active.append(['标的名称','起拍价']);wb.active.append(['重试设备',25]);out=BytesIO();wb.save(out)
+        (j.project_path(p['id'])/'files'/p['files'][0]['id']).write_bytes(out.getvalue())
+        j.analyze(p,False);self.assertEqual(p['lots'][0]['fields']['起拍价'],'25');self.assertFalse(j.can_retry_read(p))
+        with self.assertRaisesRegex(ValueError,'以免覆盖核对结果'):j.analyze(p,False)
+
+    def test_non_spreadsheet_zip_named_xls_has_chinese_error(self):
+        out=BytesIO()
+        with zipfile.ZipFile(out,'w') as archive:archive.writestr('word/document.xml','<text/>')
+        with self.assertRaisesRegex(ValueError,'不是可读取的 Excel 表格'):j.read_document(out.getvalue(),'错误文件.xls',False)
+
     def test_docx_paragraphs_and_tables_keep_reading_order(self):
         from docx import Document
         doc=Document();doc.add_paragraph('第一批设备及价格：');t=doc.add_table(rows=2,cols=2)

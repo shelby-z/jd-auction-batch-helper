@@ -239,6 +239,15 @@ def _read_document(blob,name,use_ocr,stack,table_metadata):
     text=''; tables=[]; notes=[]
     source=lambda: stack.enter_context(BytesIO(blob) if isinstance(blob,bytes) else blob.open('rb'))
     raw=lambda: blob if isinstance(blob,bytes) else blob.read_bytes()
+    if ext in {'.xls','.xlsx','.xlsm'}:
+        # Some spreadsheet exporters keep .xls even when the contents are XLSX.
+        # Choose the reader from the file itself; preserve the original upload.
+        signature=source().read(8)
+        if signature==bytes.fromhex('D0CF11E0A1B11AE1'): ext='.xls'
+        elif signature.startswith(b'PK'):
+            with zipfile.ZipFile(source()) as archive:
+                if 'xl/workbook.xml' in archive.namelist(): ext='.xlsx'
+                else: raise ValueError('文件不是可读取的 Excel 表格，请在 Excel/WPS 中另存为 XLSX 后重新导入。')
     if ext in {'.xlsx','.xlsm'}:
         with zipfile.ZipFile(source()) as z:
             book=ET.fromstring(z.read('xl/workbook.xml'))
@@ -333,8 +342,12 @@ def decode_text(blob):
 def empty_lot(kind, name=''):
     return {'id':uuid.uuid4().hex,'fields':{'拍卖业务线':templates()[kind]['name'],'拍品名称':name},'sources':{'拍卖业务线':'所选模板'},'conflicts':{},'imageIds':[]}
 
+def can_retry_read(p):
+    documents=[f for f in p.get('files',[]) if f['kind']=='document']
+    return bool(p.get('analyzed') and not p.get('lots') and any(f.get('status')=='读取失败' for f in documents) and not any(has_document_text(f) for f in documents))
+
 def analyze(p, use_ocr=True, progress=None):
-    if p['analyzed'] or p['lots']: raise ValueError('已生成标的，请新建项目重新识别，以免覆盖核对结果')
+    if p['lots'] or (p['analyzed'] and not can_retry_read(p)): raise ValueError('已生成标的，请新建项目重新识别，以免覆盖核对结果')
     fields=templates()[p['template']]['fields']
     lots=[]; planned=[]; shared={}; texts=[];plan_summary={'files':[],'excluded':[],'pending':[]}
     ordered=sorted(p['files'],key=lambda f:(f['kind']=='image',Path(f['name']).suffix.lower() not in {'.xls','.xlsx','.xlsm','.csv'}))

@@ -51,7 +51,7 @@ def start_job(project_id,body,kind='analyze'):
                 elif kind=='files':
                     try:core.ingest_source(p,body['name'],body['path'],progress)
                     finally:body['path'].unlink(missing_ok=True)
-                elif not p['analyzed']:
+                elif not p['analyzed'] or core.can_retry_read(p):
                     core.analyze(p,body.get('ocr',True),progress)
                 elif kind=='analyze':
                     for file in p['files']:

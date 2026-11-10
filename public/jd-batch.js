@@ -115,10 +115,15 @@ async function showStep(value) {
     if(project.lastAudit)renderAudit(await api(`/api/projects/${project.id}/audits/${project.lastAudit}`));
   }
 }
+function canRetryRead(value) {
+  const documents=(value?.files||[]).filter(f=>f.kind==='document');
+  return Boolean(value?.analyzed && !value.lots.length && documents.some(f=>f.status==='读取失败') && !documents.some(f=>(f.text||'').trim()));
+}
 function render() {
   renderFiles(); renderLots(); renderEditor(); renderUnassigned(); renderValidation();
   $('reviewed').checked = project?.reviewed || false;
-  $('analyze').disabled = !project?.files.length || project.analyzed || project.lots.length > 0;
+  $('analyze').disabled = !project?.files.length || (project.analyzed && !canRetryRead(project)) || project.lots.length > 0;
+  $('analyze').textContent = canRetryRead(project) ? '重新读取资料并整理标的' : '读取资料并整理标的';
   $('choose-files').disabled = Boolean(project?.analyzed || project?.lots.length);
   $('choose-folder').disabled = $('choose-files').disabled;
   $('review-subtitle').textContent = `${project?.lots.length || 0} 个标的 · 空白必填项和来源冲突会提示补充`;
@@ -165,7 +170,7 @@ function render() {
 function renderFiles() {
   const files = project?.files || [];
   $('file-summary').textContent = files.length ? `已保存 ${files.length} 个文件 · ${(files.reduce((n,f)=>n+f.size,0)/1048576).toFixed(1)} MB` : '';
-  $('files').innerHTML = files.map(f => `<div class="file-row"><span>${escape(f.name)}</span><small>${escape(f.status)} · ${(f.size/1024).toFixed(0)} KB</small></div>`).join('');
+  $('files').innerHTML = files.map(f => `<div class="file-row"><span>${escape(f.name)}${f.status==='读取失败'?(f.notes||[]).map(n=>`<br><small class="danger">${escape(n)}</small>`).join(''):''}</span><small>${escape(f.status)} · ${(f.size/1024).toFixed(0)} KB</small></div>`).join('');
 }
 function renderLots() {
   if (project?.lots.length && !project.lots.some(l => l.id === selected)) selected = project.lots[0].id;

@@ -58,6 +58,20 @@ class ClassificationTests(unittest.TestCase):
         payload=json.loads(json.dumps(p));payload['lots'][0]['fields']['联系人']='测试联系人';core.update_review(p,payload)
         self.assertEqual(p['lots'][0]['grouping']['codes'],['C001','C002'])
 
+    def test_ai_can_verify_blank_price_header_without_inventing_one(self):
+        wb=openpyxl.Workbook();ws=wb.active;ws.title='上拍安排'
+        ws.append(['市场行情价','标的物编号',None,'拍品名称'])
+        ws.append([500,'B001',2000,'B001-B002合拍设备']);ws.append([500,'B002',None,None])
+        ws.merge_cells('C2:C3');ws.merge_cells('D2:D3');out=BytesIO();wb.save(out)
+        p=core.new_project('无表头金额列','government');core.add_file(p,'上拍表.xls',out.getvalue());core.analyze(p,False)
+        schema=self.schema();columns=schema['tables'][0]['columns'];columns['id']['header']='标的物编号';columns['name']['header']='拍品名称';columns['price']['header']=''
+        ai.recognize_grouping(p,lambda prompt,payload:schema)
+        self.assertEqual(len(p['lots']),1);self.assertEqual(p['lots'][0]['fields']['起拍价'],'2000')
+        self.assertEqual(p['lots'][0]['grouping']['codes'],['B001','B002'])
+        tables=core.read_document(out.getvalue(),'上拍表.xls',False)[1]
+        columns['price']['header']='编造起拍价'
+        with self.assertRaisesRegex(ValueError,'不一致'):ai.grouping_hints(schema,tables)
+
     def test_existing_template_folder_is_preserved_and_matches_photos(self):
         wb=openpyxl.Workbook();ws=wb.active;ws.append(['拍品名称','起拍价','图片文件夹名称'])
         ws.append(['单独设备',800,'照片_07']);out=BytesIO();wb.save(out)

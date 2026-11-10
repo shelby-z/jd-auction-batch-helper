@@ -47,3 +47,13 @@ test('progress displays measured ETA and discards stale estimates',()=>{
   ctx.updateProgress({remainingSeconds:30,progressAt:Date.now()/1000-20});
   assert.match(elements['progress-time'].textContent,/正在估算/);
 });
+
+test('failed empty import can retry but existing lots remain protected',()=>{
+  const ctx=vm.createContext({});
+  vm.runInContext(script.slice(script.indexOf('function canRetryRead('),script.indexOf('function render()')),ctx);
+  const failed={analyzed:true,lots:[],files:[{kind:'document',status:'读取失败',text:''}]};
+  assert.equal(ctx.canRetryRead(failed),true);
+  assert.equal(ctx.canRetryRead({...failed,lots:[{id:'already-reviewed'}]}),false);
+  assert.equal(ctx.canRetryRead({...failed,files:[{kind:'document',status:'已读取',text:'已有资料'}]}),false);
+  assert.equal(ctx.canRetryRead(null),false);
+});
