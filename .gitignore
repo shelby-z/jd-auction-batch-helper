@@ -1,0 +1,20 @@
+# Business inputs, credentials and local processing state
+/data/
+/logs/
+/outputs/
+/.codex-work/
+/02_外部文件/
+/runtime/
+/.venv/
+/venv/
+__pycache__/
+*.py[cod]
+*.log
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+Desktop.ini
